@@ -63,22 +63,60 @@ jobs:
           submodules: recursive
           fetch-depth: 1
 
-      - name: Setup CUDA Toolkit
-        uses: Jimver/cuda-toolkit@v0.2.22
-        id: cuda-toolkit
-        with:
-          cuda: ${{ inputs.cuda_version }}
-          sub-packages: '["nvcc", "curand_dev", "cublas_dev", "cudart", "cudart_dev"]'
-          use-github-cache: true
-
-      - name: Display CUDA info
+      - name: Setup CUDA Toolkit via Chocolatey
         shell: pwsh
         run: |
-          nvcc --version
-          echo "CUDA_PATH: $env:CUDA_PATH"
-          echo "CUDA_HOME: $env:CUDA_HOME"
-          if (Test-Path "${env:CUDA_PATH}/bin/nvcc.exe") {
-            & "${env:CUDA_PATH}/bin/nvcc.exe" --list-gpu-arch
+          $cudaVersion = "${{ inputs.cuda_version }}"
+          Write-Host "Installing CUDA Toolkit $cudaVersion via Chocolatey..."
+
+          # Chocolatey CUDA package naming: e.g. 12.8.1 → package version 12.8.1
+          choco install cuda --version $cudaVersion -y --no-progress --ignore-detected-reboot --limit-output 2>&1
+          $exitCode = $LASTEXITCODE
+          if ($exitCode -ne 0 -and $exitCode -ne 1641 -and $exitCode -ne 3010) {
+            Write-Warning "Chocolatey install returned $exitCode. This may be a reboot-required exit code."
+          } else {
+            Write-Host "Chocolatey install succeeded or requires reboot."
+          }
+          refreshenv
+
+      - name: Setup CUDA PATH
+        shell: pwsh
+        run: |
+          $cudaDir = "$env:ProgramFiles\NVIDIA GPU Computing Toolkit\CUDA"
+          Write-Host "Searching for CUDA installation..."
+          if (Test-Path $cudaDir) {
+            Get-ChildItem $cudaDir | ForEach-Object { Write-Host "  Found: $($_.Name)" }
+            $latest = Get-ChildItem $cudaDir | Sort-Object Name -Descending | Select-Object -First 1
+            if ($latest) {
+              $cudaBin = Join-Path $latest.FullName "bin"
+              $cudaLib = Join-Path $latest.FullName "lib\x64"
+              $cudaInclude = Join-Path $latest.FullName "include"
+              echo "CUDA_PATH=$($latest.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+              echo "CUDA_HOME=$($latest.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+              echo "CUDA_PATH_V$($latest.Name)=$($latest.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+              echo "$cudaBin" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+              Write-Host "CUDA_PATH=$($latest.FullName)"
+            }
+          }
+
+          # Verify nvcc
+          $nvccPath = (Get-Command nvcc.exe -ErrorAction SilentlyContinue).Source
+          if (-not $nvccPath) {
+            # Search for it
+            $nvccSearch = Get-ChildItem "$env:ProgramFiles\NVIDIA GPU Computing Toolkit" -Filter "nvcc.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($nvccSearch) {
+              $nvccPath = $nvccSearch.FullName
+              $nvccDir = Split-Path $nvccPath -Parent
+              echo "$nvccDir" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+            }
+          }
+
+          if ($nvccPath) {
+            Write-Host "nvcc found: $nvccPath"
+            & $nvccPath --version
+          } else {
+            Write-Error "nvcc.exe not found after CUDA installation!"
+            exit 1
           }
 
       - name: Setup Visual Studio shell (amd64)
