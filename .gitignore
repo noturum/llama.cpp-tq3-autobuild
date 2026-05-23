@@ -1,0 +1,27 @@
+# Build directories
+build*/
+out*/
+cmake-build-*/
+
+# IDE files
+.idea/
+.vs/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# CI artifacts
+*.zip
+*.tar.gz
+
+# Python
+__pycache__/
+*.pyc
+
+# Custom
+.tmp/
