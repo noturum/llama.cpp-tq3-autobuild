@@ -28,7 +28,7 @@ on:
           - 'Release'
           - 'RelWithDebInfo'
       cuda_arch:
-        description: 'CUDA architectures (semicolon-separated, e.g. "52;61;75;80;86;89;90")'
+        description: 'CUDA architectures semicolon-separated (e.g. 52;61;75;80;86;89;90)'
         required: true
         default: '52;61;75;80;86;89;90'
         type: string
