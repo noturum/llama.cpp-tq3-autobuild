@@ -62,135 +62,94 @@ jobs:
           submodules: recursive
           fetch-depth: 1
 
-      - name: Setup CUDA Toolkit (direct download + 7z extract)
+      - name: Setup CUDA Toolkit (network installer, silent mode)
         shell: pwsh
         run: |
           $cudaVersion = "${{ inputs.cuda_version }}"
-
-          # ---------------------------------------------------------------
-          # 1. Ensure 7-Zip is available
-          # ---------------------------------------------------------------
-          $7zPath = (Get-Command 7z.exe -ErrorAction SilentlyContinue).Source
-          if (-not $7zPath) { $7zPath = "C:\Program Files\7-Zip\7z.exe" }
-          if (-not (Test-Path $7zPath)) { $7zPath = "${env:ProgramFiles}\7-Zip\7z.exe" }
-          if (-not (Test-Path $7zPath)) {
-            Write-Host "7-Zip not found. Installing via Chocolatey..."
-            choco install 7zip -y --no-progress --limit-output 2>&1
-            $7zPath = "C:\Program Files\7-Zip\7z.exe"
-          }
-          Write-Host "Using 7-Zip: $7zPath"
-
-          # ---------------------------------------------------------------
-          # 2. Download CUDA network installer from NVIDIA
-          #    (NSIS native stub - downloads packages, then runs .NET setup)
-          # ---------------------------------------------------------------
-          $nvidiaUrl = "https://developer.download.nvidia.com/compute/cuda/$cudaVersion/network_installers/cuda_${cudaVersion}_windows_network.exe"
+          $cudaShort = $cudaVersion.Substring(0, $cudaVersion.LastIndexOf('.'))  # e.g. "12.8"
+          $cudaUrl = "https://developer.download.nvidia.com/compute/cuda/$cudaVersion/network_installers/cuda_${cudaVersion}_windows_network.exe"
           $installerPath = "$env:TEMP\cuda_installer.exe"
-          $extractDir = "C:\CUDA-$cudaVersion"
 
-          Write-Host "==> Downloading CUDA Toolkit $cudaVersion from NVIDIA..."
-          Write-Host "URL: $nvidiaUrl"
+          Write-Host "==> Downloading CUDA Toolkit $cudaVersion network installer..."
+          Write-Host "URL: $cudaUrl"
 
           $maxRetries = 3
           for ($retry = 1; $retry -le $maxRetries; $retry++) {
             try {
-              Invoke-WebRequest -Uri $nvidiaUrl -OutFile $installerPath -UseBasicParsing -TimeoutSec 900
-              Write-Host "Download complete ($((Get-Item $installerPath).Length / 1MB) MB)"
+              Invoke-WebRequest -Uri $cudaUrl -OutFile $installerPath -UseBasicParsing -TimeoutSec 900
+              $sizeMB = [math]::Round((Get-Item $installerPath).Length / 1MB, 2)
+              Write-Host "Download complete ($sizeMB MB)"
               break
             } catch {
               if ($retry -eq $maxRetries) { throw }
-              Write-Warning "Download attempt $retry failed: $_ . Retrying..."
+              Write-Warning "Attempt $retry failed: $_ . Retrying..."
               Start-Sleep -Seconds 10
             }
           }
 
-          # ---------------------------------------------------------------
-          # 3. Extract with `-extract` flag (bypasses the broken .NET setup.exe)
-          #    NSIS stub downloads packages, extracts them, skips setup.exe
-          # ---------------------------------------------------------------
-          Write-Host "==> Extracting CUDA toolkit (NSIS -extract flag, bypassing .NET setup)..."
-          New-Item -ItemType Directory -Force -Path $extractDir | Out-Null
-          & $installerPath -extract="$extractDir" 2>&1
-          if ($LASTEXITCODE -ne 0) {
-            Write-Warning "NSIS -extract failed (exit $LASTEXITCODE). Trying 7-Zip..."
-            & $7zPath x $installerPath -o"$extractDir" -y -aoa 2>&1
+          Write-Host "==> Installing selected sub-packages: nvcc, cudart, cublas (silent install)..."
+          $packages = "nvcc_$cudaShort cudart_$cudaShort cudart_dev_$cudaShort cublas_$cudaShort cublas_dev_$cudaShort"
+          Write-Host "Packages: $packages"
+
+          $proc = Start-Process -FilePath $installerPath `
+            -ArgumentList "-s $packages" `
+            -Wait -NoNewWindow -PassThru
+          if ($proc.ExitCode -ne 0) {
+            Write-Error "CUDA installer exited with code $($proc.ExitCode)"
+            # Collect log files for debugging
+            $logFiles = Get-ChildItem "$env:TEMP" -Filter "*cuda*install*" -ErrorAction SilentlyContinue
+            if ($logFiles) { $logFiles | ForEach-Object { Write-Host "Log: $($_.FullName)" } }
+            # Also check in the NVIDIA log directory
+            $nvidiaLogs = Get-ChildItem "${env:SystemRoot}\Temp" -Filter "*.log" -ErrorAction SilentlyContinue | Where-Object { $_.Name -match "cuda|nvidia" }
+            if ($nvidiaLogs) { $nvidiaLogs | ForEach-Object { Write-Host "NVIDIA Log: $($_.FullName)" } }
+            exit $proc.ExitCode
           }
 
           # ---------------------------------------------------------------
-          # 4. Find nvcc.exe in extracted files (handles nested layouts)
+          # CUDA default install location on Windows
           # ---------------------------------------------------------------
-          Write-Host "==> Locating nvcc.exe..."
-          $cudaDir = $null
-
-          # Search patterns for common CUDA extraction layouts
-          $searchPaths = @(
-            $extractDir,
-            (Join-Path $extractDir "cuda"),
-            (Join-Path $extractDir "CUDA"),
-            (Join-Path $extractDir "CUDA-$cudaVersion"),
-            "$env:ProgramFiles\NVIDIA GPU Computing Toolkit\CUDA"
-          )
-
-          foreach ($base in $searchPaths) {
-            if (-not (Test-Path $base)) { continue }
-            $candidates = if (Test-Path "$base\bin\nvcc.exe") { @(Get-Item $base) }
-                          else { Get-ChildItem $base -Directory -ErrorAction SilentlyContinue | Where-Object { Test-Path "$($_.FullName)\bin\nvcc.exe" } }
-            foreach ($c in $candidates) {
-              $cudaDir = $c.FullName
-              Write-Host "  Found: $cudaDir"
-              break
-            }
-            if ($cudaDir) { break }
-          }
-
-          # Last resort: deep filesystem search
-          if (-not $cudaDir) {
-            Write-Host "Searching deeper for nvcc.exe..."
-            $nvccPaths = Get-ChildItem $extractDir -Filter "nvcc.exe" -Recurse -ErrorAction SilentlyContinue -Depth 6 | Select-Object -First 1
-            if ($nvccPaths) {
-              $cudaDir = $nvccPaths.Directory.Parent.FullName
-              Write-Host "  Found (deep search): $cudaDir"
+          $cudaDir = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v$cudaShort"
+          if (-not (Test-Path $cudaDir)) {
+            Write-Host "Default path not found, searching for CUDA installation..."
+            $cudaDirs = Get-ChildItem "${env:ProgramFiles}\NVIDIA GPU Computing Toolkit\CUDA" -Directory -ErrorAction SilentlyContinue
+            if (-not $cudaDirs) { $cudaDirs = Get-ChildItem "${env:ProgramFiles(x86)}\NVIDIA GPU Computing Toolkit\CUDA" -Directory -ErrorAction SilentlyContinue }
+            if ($cudaDirs) {
+              $cudaDir = $cudaDirs[-1].FullName  # highest version
+              Write-Host "Found: $cudaDir"
+            } else {
+              Write-Error "CUDA Toolkit not found after installation!"
+              exit 1
             }
           }
 
-          if (-not $cudaDir -or -not (Test-Path "$cudaDir\bin\nvcc.exe")) {
-            Write-Host "=== Extraction directory contents ==="
-            Get-ChildItem $extractDir -Depth 2 | Select-Object FullName, Mode | Format-Table -AutoSize | Out-String | Write-Host
-            Write-Error "nvcc.exe not found after extraction!"
-            exit 1
-          }
-
-          # ---------------------------------------------------------------
-          # 5. Set up CUDA environment
-          # ---------------------------------------------------------------
           $cudaBin = Join-Path $cudaDir "bin"
+          $cudaLib = Join-Path $cudaDir "lib\x64"
+
+          # Set environment variables
           echo "CUDA_PATH=$cudaDir" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           echo "CUDA_HOME=$cudaDir" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          echo "CUDA_PATH_V${cudaShort//./_}=$cudaDir" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           echo "$cudaBin" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
           $env:Path += ";$cudaBin"
 
-          # Add nvvm if present
+          # Add nvvm path if present
           $nvvmPath = Join-Path $cudaDir "nvvm\bin"
           if (Test-Path $nvvmPath) {
             echo "$nvvmPath" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
-            $env:Path += ";$nvvmPath"
           }
 
-          # Add lib path for cmake find_package(CUDA)
-          $cudaLib = Join-Path $cudaDir "lib\x64"
           Write-Host "CUDA_PATH=$cudaDir"
+          Write-Host "CUDA bin: $cudaBin"
           Write-Host "CUDA lib: $cudaLib"
 
-          # ---------------------------------------------------------------
-          # 6. Verify nvcc
-          # ---------------------------------------------------------------
-          $nvccCmd = (Get-Command nvcc.exe -ErrorAction SilentlyContinue)
-          if (-not $nvccCmd) { $nvccCmd = Get-Item "$cudaBin\nvcc.exe" -ErrorAction SilentlyContinue }
-          if ($nvccCmd) {
-            Write-Host "nvcc verified: $($nvccCmd.Source)"
-            & $nvccCmd.Source --version
+          # Verify nvcc
+          $nvccPath = Get-Command nvcc.exe -ErrorAction SilentlyContinue
+          if (-not $nvccPath) { $nvccPath = Get-Item "$cudaBin\nvcc.exe" -ErrorAction SilentlyContinue }
+          if ($nvccPath) {
+            Write-Host "nvcc verified: $($nvccPath.Source)"
+            & $nvccPath.Source --version
           } else {
-            Write-Error "nvcc.exe not found in PATH!"
+            Write-Error "nvcc.exe not found!"
             exit 1
           }
 
