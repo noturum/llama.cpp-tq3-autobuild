@@ -327,14 +327,6 @@ jobs:
           Compress-Archive -Path "$distDir/*" -DestinationPath "${{ runner.temp }}/$archiveName" -CompressionLevel Optimal
           echo "ARCHIVE_NAME=$archiveName" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: llama.cpp-tq3-windows-x64-cuda${{ inputs.cuda_version }}-${{ inputs.build_type }}
-          path: ${{ runner.temp }}/dist/
-          compression-level: 0
-          retention-days: 7
-
       - name: Upload archive
         uses: actions/upload-artifact@v4
         with:
