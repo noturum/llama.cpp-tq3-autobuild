@@ -319,18 +319,9 @@ jobs:
             Write-Host "Included EXE: $($_.Name)"
           }
 
-      - name: Create archive
-        shell: pwsh
-        run: |
-          $distDir = "${{ runner.temp }}/dist"
-          $archiveName = "llama.cpp-tq3-windows-x64-cuda${{ inputs.cuda_version }}-${{ inputs.build_type }}.zip"
-          Compress-Archive -Path "$distDir/*" -DestinationPath "${{ runner.temp }}/$archiveName" -CompressionLevel Optimal
-          echo "ARCHIVE_NAME=$archiveName" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-
-      - name: Upload archive
+      - name: Upload binaries
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ env.ARCHIVE_NAME }}
-          path: ${{ runner.temp }}/${{ env.ARCHIVE_NAME }}
-          compression-level: 0
+          name: llama.cpp-tq3-windows-x64-cuda${{ inputs.cuda_version }}-${{ inputs.build_type }}
+          path: ${{ runner.temp }}/dist/
           retention-days: 7
