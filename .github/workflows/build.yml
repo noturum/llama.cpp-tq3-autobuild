@@ -81,16 +81,16 @@ jobs:
           Write-Host "Using 7-Zip: $7zPath"
 
           # ---------------------------------------------------------------
-          # 2. Download CUDA local installer from NVIDIA
+          # 2. Download CUDA network installer from NVIDIA
+          #    (NSIS native stub - downloads packages, then runs .NET setup)
           # ---------------------------------------------------------------
-          $nvidiaUrl = "https://developer.download.nvidia.com/compute/cuda/$cudaVersion/local_installers/cuda_${cudaVersion}_windows.exe"
+          $nvidiaUrl = "https://developer.download.nvidia.com/compute/cuda/$cudaVersion/network_installers/cuda_${cudaVersion}_windows_network.exe"
           $installerPath = "$env:TEMP\cuda_installer.exe"
           $extractDir = "C:\CUDA-$cudaVersion"
 
           Write-Host "==> Downloading CUDA Toolkit $cudaVersion from NVIDIA..."
           Write-Host "URL: $nvidiaUrl"
 
-          # Download with retries and longer timeout
           $maxRetries = 3
           for ($retry = 1; $retry -le $maxRetries; $retry++) {
             try {
@@ -105,14 +105,15 @@ jobs:
           }
 
           # ---------------------------------------------------------------
-          # 3. Extract with 7-Zip (the .exe is a self-extracting 7z archive)
+          # 3. Extract with `-extract` flag (bypasses the broken .NET setup.exe)
+          #    NSIS stub downloads packages, extracts them, skips setup.exe
           # ---------------------------------------------------------------
-          Write-Host "==> Extracting CUDA toolkit with 7-Zip..."
+          Write-Host "==> Extracting CUDA toolkit (NSIS -extract flag, bypassing .NET setup)..."
           New-Item -ItemType Directory -Force -Path $extractDir | Out-Null
-          & $7zPath x $installerPath -o"$extractDir" -y -aoa 2>&1
+          & $installerPath -extract="$extractDir" 2>&1
           if ($LASTEXITCODE -ne 0) {
-            Write-Warning "7-Zip extraction failed (exit $LASTEXITCODE). Trying installer -extract..."
-            & $installerPath -extract="$extractDir" 2>&1
+            Write-Warning "NSIS -extract failed (exit $LASTEXITCODE). Trying 7-Zip..."
+            & $7zPath x $installerPath -o"$extractDir" -y -aoa 2>&1
           }
 
           # ---------------------------------------------------------------
