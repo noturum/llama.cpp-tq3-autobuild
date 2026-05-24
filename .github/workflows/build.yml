@@ -62,94 +62,145 @@ jobs:
           submodules: recursive
           fetch-depth: 1
 
-      - name: Setup CUDA Toolkit (network installer, silent mode)
+      - name: Setup CUDA Toolkit (ZIP redistributables from NVIDIA)
         shell: pwsh
         run: |
-          $cudaVersion = "${{ inputs.cuda_version }}"
-          $cudaShort = $cudaVersion.Substring(0, $cudaVersion.LastIndexOf('.'))  # e.g. "12.8"
-          $cudaUrl = "https://developer.download.nvidia.com/compute/cuda/$cudaVersion/network_installers/cuda_${cudaVersion}_windows_network.exe"
-          $installerPath = "$env:TEMP\cuda_installer.exe"
+          # =============================================================
+          # CUDA 12.8.1 redistributable component versions
+          # (from developer.download.nvidia.com/compute/cuda/redist/)
+          # =============================================================
+          $cudaVersion = "12.8.1"
+          $cudaShort   = "12.8"
 
-          Write-Host "==> Downloading CUDA Toolkit $cudaVersion network installer..."
-          Write-Host "URL: $cudaUrl"
+          # Build numbers for CUDA 12.8.1 (highest 12.8.x build = patch 1)
+          $ver_nvcc    = "12.8.93"
+          $ver_cudart  = "12.8.90"
+          $ver_nvrtc   = "12.8.93"
+          $ver_nvtx    = "12.8.90"
+          $ver_profapi = "12.8.90"
+          $ver_cccl    = "12.8.90"
+          $ver_cublas  = "12.8.4.1"
 
-          $maxRetries = 3
-          for ($retry = 1; $retry -le $maxRetries; $retry++) {
-            try {
-              Invoke-WebRequest -Uri $cudaUrl -OutFile $installerPath -UseBasicParsing -TimeoutSec 900
-              $sizeMB = [math]::Round((Get-Item $installerPath).Length / 1MB, 2)
-              Write-Host "Download complete ($sizeMB MB)"
-              break
-            } catch {
-              if ($retry -eq $maxRetries) { throw }
-              Write-Warning "Attempt $retry failed: $_ . Retrying..."
-              Start-Sleep -Seconds 10
-            }
-          }
-
-          Write-Host "==> Installing selected sub-packages: nvcc, cudart, cublas (silent install)..."
-          $packages = "nvcc_$cudaShort cudart_$cudaShort cudart_dev_$cudaShort cublas_$cudaShort cublas_dev_$cudaShort"
-          Write-Host "Packages: $packages"
-
-          $proc = Start-Process -FilePath $installerPath `
-            -ArgumentList "-s $packages" `
-            -Wait -NoNewWindow -PassThru
-          if ($proc.ExitCode -ne 0) {
-            Write-Error "CUDA installer exited with code $($proc.ExitCode)"
-            # Collect log files for debugging
-            $logFiles = Get-ChildItem "$env:TEMP" -Filter "*cuda*install*" -ErrorAction SilentlyContinue
-            if ($logFiles) { $logFiles | ForEach-Object { Write-Host "Log: $($_.FullName)" } }
-            # Also check in the NVIDIA log directory
-            $nvidiaLogs = Get-ChildItem "${env:SystemRoot}\Temp" -Filter "*.log" -ErrorAction SilentlyContinue | Where-Object { $_.Name -match "cuda|nvidia" }
-            if ($nvidiaLogs) { $nvidiaLogs | ForEach-Object { Write-Host "NVIDIA Log: $($_.FullName)" } }
-            exit $proc.ExitCode
-          }
-
-          # ---------------------------------------------------------------
-          # CUDA default install location on Windows
-          # ---------------------------------------------------------------
+          $REDIST_BASE = "https://developer.download.nvidia.com/compute/cuda/redist"
           $cudaDir = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v$cudaShort"
-          if (-not (Test-Path $cudaDir)) {
-            Write-Host "Default path not found, searching for CUDA installation..."
-            $cudaDirs = Get-ChildItem "${env:ProgramFiles}\NVIDIA GPU Computing Toolkit\CUDA" -Directory -ErrorAction SilentlyContinue
-            if (-not $cudaDirs) { $cudaDirs = Get-ChildItem "${env:ProgramFiles(x86)}\NVIDIA GPU Computing Toolkit\CUDA" -Directory -ErrorAction SilentlyContinue }
-            if ($cudaDirs) {
-              $cudaDir = $cudaDirs[-1].FullName  # highest version
-              Write-Host "Found: $cudaDir"
-            } else {
-              Write-Error "CUDA Toolkit not found after installation!"
+
+          Write-Host "=== CUDA $cudaVersion Toolkit - ZIP redistributable install ==="
+          Write-Host "Target: $cudaDir"
+          Write-Host ""
+
+          # -----------------------------------------------------------
+          # 1. Install unzip
+          # -----------------------------------------------------------
+          Write-Host "==> Installing unzip..."
+          choco install unzip -y --no-progress --limit-output 2>&1 | Out-Null
+
+          # -----------------------------------------------------------
+          # 2. Define component downloads: (name, ver, suffix)
+          # -----------------------------------------------------------
+          $components = @(
+            @{name="cuda_nvcc";    ver=$ver_nvcc;    suffix=""},
+            @{name="cuda_cudart";  ver=$ver_cudart;  suffix=""},
+            @{name="cuda_nvrtc";   ver=$ver_nvrtc;   suffix=""},
+            @{name="libcublas";    ver=$ver_cublas;  suffix=""},
+            @{name="cuda_nvtx";    ver=$ver_nvtx;    suffix=""},
+            @{name="cuda_profiler_api"; ver=$ver_profapi; suffix=""},
+            @{name="cuda_cccl";    ver=$ver_cccl;    suffix=""}
+          )
+
+          # -----------------------------------------------------------
+          # 3. Download + extract EVERYTHING
+          # -----------------------------------------------------------
+          mkdir -p $cudaDir | Out-Null
+          Push-Location $cudaDir
+
+          $totalStart = Get-Date
+          foreach ($comp in $components) {
+            $name = $comp.name
+            $ver  = $comp.ver
+            $zip  = "${name}-windows-x86_64-${ver}-archive.zip"
+            $dir  = "${name}-windows-x86_64-${ver}-archive"
+            $url  = "${REDIST_BASE}/${name}/windows-x86_64/${zip}"
+
+            Write-Host "  [$name] $ver ($zip)"
+
+            # Download
+            $start = Get-Date
+            try {
+              Invoke-WebRequest -Uri $url -OutFile $zip -UseBasicParsing -TimeoutSec 600
+            } catch {
+              Write-Error "Download failed for $url : $_"
               exit 1
             }
+            $elapsed = [math]::Round(((Get-Date) - $start).TotalSeconds, 1)
+            $sizeMB  = [math]::Round((Get-Item $zip).Length / 1MB, 1)
+            Write-Host "    Downloaded ${sizeMB}MB in ${elapsed}s"
+
+            # Extract
+            $start = Get-Date
+            & unzip -q -o $zip 2>&1 | Out-Null
+            if ($LASTEXITCODE -ne 0) {
+              Write-Error "Extraction failed for $zip"
+              exit 1
+            }
+            Remove-Item $zip -Force
+            Write-Host "    Extracted in $([math]::Round(((Get-Date) - $start).TotalSeconds, 1))s"
           }
 
+          $totalTime = [math]::Round(((Get-Date) - $totalStart).TotalMinutes, 1)
+          Write-Host "Download+extract: ${totalTime}min"
+          Write-Host ""
+
+          # -----------------------------------------------------------
+          # 4. xcopy extracted dirs into CUDA root
+          # -----------------------------------------------------------
+          Write-Host "==> Merging component trees into $cudaDir ..."
+          foreach ($comp in $components) {
+            $name = $comp.name
+            $ver  = $comp.ver
+            $dir  = "${name}-windows-x86_64-${ver}-archive"
+            if (Test-Path $dir) {
+              Write-Host "  Merging: $dir"
+              xcopy "$dir\*" "$cudaDir" /E /I /H /Y | Out-Null
+              Remove-Item -Recurse -Force $dir
+            }
+          }
+
+          # -----------------------------------------------------------
+          # 5. Set environment variables
+          # -----------------------------------------------------------
           $cudaBin = Join-Path $cudaDir "bin"
           $cudaLib = Join-Path $cudaDir "lib\x64"
 
-          # Set environment variables
-          echo "CUDA_PATH=$cudaDir" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-          echo "CUDA_HOME=$cudaDir" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-          echo "CUDA_PATH_V${cudaShort//./_}=$cudaDir" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-          echo "$cudaBin" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+          echo "CUDA_PATH=$cudaDir"    | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          echo "CUDA_HOME=$cudaDir"    | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          echo "CUDA_PATH_V12_8=$cudaDir" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          echo "$cudaBin"                | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+
           $env:Path += ";$cudaBin"
 
-          # Add nvvm path if present
           $nvvmPath = Join-Path $cudaDir "nvvm\bin"
           if (Test-Path $nvvmPath) {
             echo "$nvvmPath" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
           }
 
           Write-Host "CUDA_PATH=$cudaDir"
-          Write-Host "CUDA bin: $cudaBin"
-          Write-Host "CUDA lib: $cudaLib"
+          Write-Host ""
 
-          # Verify nvcc
+          # -----------------------------------------------------------
+          # 6. Verify nvcc
+          # -----------------------------------------------------------
+          Write-Host "==> Verifying nvcc..."
           $nvccPath = Get-Command nvcc.exe -ErrorAction SilentlyContinue
           if (-not $nvccPath) { $nvccPath = Get-Item "$cudaBin\nvcc.exe" -ErrorAction SilentlyContinue }
           if ($nvccPath) {
-            Write-Host "nvcc verified: $($nvccPath.Source)"
+            Write-Host "  Found: $($nvccPath.Source)"
             & $nvccPath.Source --version
           } else {
             Write-Error "nvcc.exe not found!"
+            # Show what IS in the bin directory
+            if (Test-Path $cudaBin) {
+              Get-ChildItem $cudaBin | Select-Object Name, Length | Format-Table -AutoSize
+            }
             exit 1
           }
 
