@@ -319,9 +319,26 @@ jobs:
             Write-Host "Included EXE: $($_.Name)"
           }
 
+      - name: Create zip archive
+        shell: pwsh
+        run: |
+          $distDir = "${{ runner.temp }}/dist"
+          $zipName = "llama.cpp-tq3-windows-x64-cuda${{ inputs.cuda_version }}-${{ inputs.build_type }}.zip"
+          Compress-Archive -Path "$distDir/*" -DestinationPath "${{ runner.temp }}/$zipName"
+
       - name: Upload binaries
         uses: actions/upload-artifact@v4
         with:
           name: llama.cpp-tq3-windows-x64-cuda${{ inputs.cuda_version }}-${{ inputs.build_type }}
           path: ${{ runner.temp }}/dist/
           retention-days: 7
+
+      - name: Upload to Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: nightly
+          name: Nightly Build
+          files: ${{ runner.temp }}/llama.cpp-tq3-windows-x64-cuda${{ inputs.cuda_version }}-${{ inputs.build_type }}.zip
+          prerelease: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
