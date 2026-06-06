@@ -1,5 +1,6 @@
 name: Build llama.cpp-tq3 (Windows CUDA)
-
+permissions:
+  contents: write
 on:
   workflow_dispatch:
     inputs:
@@ -334,11 +335,8 @@ jobs:
           retention-days: 7
 
       - name: Upload to Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: nightly
-          name: Nightly Build
-          files: ${{ runner.temp }}/llama.cpp-tq3-windows-x64-cuda${{ inputs.cuda_version }}-${{ inputs.build_type }}.zip
-          prerelease: true
+        run: |
+          gh release create nightly "${{ runner.temp }}/llama.cpp-tq3-windows-x64-cuda${{ inputs.cuda_version }}-${{ inputs.build_type }}.zip" --title "Nightly Build" --prerelease --notes "Autobuild" || true
+          gh release upload nightly "${{ runner.temp }}/llama.cpp-tq3-windows-x64-cuda${{ inputs.cuda_version }}-${{ inputs.build_type }}.zip" --clobber
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
