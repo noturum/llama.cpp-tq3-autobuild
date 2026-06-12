@@ -62,7 +62,42 @@ jobs:
           ref: ${{ env.UPSTREAM_BRANCH }}
           submodules: recursive
           fetch-depth: 1
-
+      - name: Patch MSVC compatibility (ffs / __builtin_popcount)
+        shell: pwsh
+        run: |
+          # Patch ggml.c: add __builtin_popcount definition
+          $ggml_c = "ggml/src/ggml.c"
+          $patch_popcount = @"
+          #ifdef _MSC_VER
+          #include <intrin.h>
+          static inline int __builtin_popcount(unsigned int x) { return __popcnt(x); }
+          static inline int __builtin_popcountll(unsigned long long x) { return __popcnt64(x); }
+          #endif
+          "@
+          $content = Get-Content $ggml_c -Raw
+          if ($content -notmatch "__builtin_popcount") {
+              $newContent = $patch_popcount + "`n" + $content
+              Set-Content $ggml_c -Value $newContent -NoNewline
+              Write-Host "Patched $ggml_c"
+          }
+      
+          # Patch ggml-quants.c: add ffs definition
+          $quants_c = "ggml/src/ggml-quants.c"
+          $patch_ffs = @"
+          #ifdef _MSC_VER
+          #include <intrin.h>
+          static inline int ffs(int x) {
+              unsigned long idx;
+              return _BitScanForward(&idx, x) ? idx + 1 : 0;
+          }
+          #endif
+          "@
+          $content = Get-Content $quants_c -Raw
+          if ($content -notmatch "static inline int ffs") {
+              $newContent = $patch_ffs + "`n" + $content
+              Set-Content $quants_c -Value $newContent -NoNewline
+              Write-Host "Patched $quants_c"
+          }
       - name: Setup CUDA Toolkit (ZIP redistributables from NVIDIA)
         shell: pwsh
         run: |
